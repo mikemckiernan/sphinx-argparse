@@ -20,12 +20,12 @@ from .conftest import check_xpath, flat_dict
             ],
             'commands-by-group.html': [
                 (".//h1", 'Commands by Group'),
-                (".//tr/td[2]/strong", 'ham'),
-                (".//tr[td[2]/strong/text()='ham']/following-sibling::tr[1]/td[2]/a/code", 'sample-directive-opts'),
-                (".//tr[td[2]/strong/text()='ham']/following-sibling::tr[2]/td[2]/a/code", 'sample-directive-opts B'),
+                (".//tr/td[2]/strong", 'ham in a cone'),
+                (".//tr[td[2]/strong/text()='ham in a cone']/following-sibling::tr[1]/td[2]/a/code", 'sample-directive-opts'),
+                (".//tr[td[2]/strong/text()='ham in a cone']/following-sibling::tr[2]/td[2]/a/code", 'sample-directive-opts B'),
                 (".//tr/td[2]/strong", 'spam'),
-                (".//tr[td[2]/strong/text()='spam']/following-sibling::tr[1]/td[2]/a/code", 'sample-directive-opts'),
-                (".//tr[td[2]/strong/text()='spam']/following-sibling::tr[2]/td[2]/a/code", 'sample-directive-opts A'),
+                (".//tr[td[2]/strong/text()='spam on a stick']/following-sibling::tr[1]/td[2]/a/code", 'sample-directive-opts'),
+                (".//tr[td[2]/strong/text()='spam on a stick']/following-sibling::tr[2]/td[2]/a/code", 'sample-directive-opts A'),
                 (".//tr/td[2]/em", '(other)', False),  # Other does not have idxgroups set at all and is not present.
             ],
         }
@@ -56,9 +56,9 @@ def test_commands_by_group_index_html(app, cached_etree_parse, fname, expect):
     testroot='command-by-group-index',
     confoverrides={
         'sphinx_argparse_conf': {
-            "command_by_group_index_title": "Commands grouped by SomeName",
-            "command_by_group_index_file_suffix": "groupedby-somename",
-            "command_by_group_index_in_toctree": True,
+            "commands_by_group_index_title": "Commands grouped by SomeName",
+            "commands_by_group_index_file_suffix": "groupedby-somename",
+            "commands_by_group_index_in_toctree": True,
         }
     },
 )
@@ -66,7 +66,8 @@ def test_by_group_index_overrides_html(app, cached_etree_parse, fname, expect):
     def update_toctree(app):
         indexfile = Path(app.srcdir) / 'index.rst'
         content = indexfile.read_text(encoding='utf8')
-        content = content.replace('commands-by-group', 'commands-groupedby-somename')  # replace the toctree entry
+        # replace the toctree entry
+        content = content.replace('commands-by-group', 'commands-groupedby-somename')
         indexfile.write_text(content)
 
     update_toctree(app)

@@ -6,5 +6,4 @@ Test Directive Options
    sample
    subcommand-a
    subcommand-b
-   other
    commands-by-group

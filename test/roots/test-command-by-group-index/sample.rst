@@ -6,4 +6,4 @@ Sample
    :prog: sample-directive-opts
    :func: get_parser
    :nosubcommands:
-   :idxgroups: "spam", "ham"
+   :idxgroups: ["spam on a stick", "ham in a cone"]

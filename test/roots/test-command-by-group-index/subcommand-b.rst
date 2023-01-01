@@ -6,4 +6,4 @@ Command B
    :prog: sample-directive-opts
    :func: get_parser
    :path: B
-   :idxgroups: ["ham"]
+   :idxgroups: ["ham in a cone"]

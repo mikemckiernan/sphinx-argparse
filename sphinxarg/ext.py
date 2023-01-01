@@ -3,7 +3,7 @@ import os
 import shutil
 import sys
 from argparse import ArgumentParser
-from typing import Dict, List, cast
+from typing import Dict, List, Optional, cast
 
 from docutils import nodes
 from docutils.frontend import OptionParser
@@ -179,66 +179,6 @@ def print_action_groups(data, nested_content, markdown_help=False, settings=None
     return nodes_list
 
 
-def print_subcommands(data, nested_content, markdown_help=False, settings=None, domain: SphinxArgParseDomain = None, idxgroups: List[str] = None):  # noqa: N803
-    """
-    Each subcommand is a dictionary with the following keys:
-
-    ['usage', 'action_groups', 'bare_usage', 'name', 'help']
-
-    In essence, this is all tossed in a new section with the title 'name'.
-    Apparently there can also be a 'description' entry.
-    """
-
-    definitions = map_nested_definitions(nested_content)
-    items = []
-    if 'children' in data:
-        subcommands = nodes.section(ids=["Sub-commands"])
-        subcommands += nodes.title('Sub-commands', 'Sub-commands')
-
-        for child in data['children']:
-            sec = nodes.section(ids=[child['name'], command_anchor_id(child)])
-            sec += nodes.title(child['name'], child['name'])
-
-            if domain:
-                domain.add_command(child, idxgroups)
-
-            if 'description' in child and child['description']:
-                desc = [child['description']]
-            elif child['help']:
-                desc = [child['help']]
-            else:
-                desc = ['Undocumented']
-
-            # Handle nested content
-            subcontent = []
-            if child['name'] in definitions:
-                classifier, s, subcontent = definitions[child['name']]
-                if classifier == '@replace':
-                    desc = [s]
-                elif classifier == '@after':
-                    desc.append(s)
-                elif classifier == '@before':
-                    desc.insert(0, s)
-
-            for element in render_list(desc, markdown_help):
-                sec += element
-            sec += nodes.literal_block(text=child['bare_usage'])
-            for x in print_action_groups(child, nested_content + subcontent, markdown_help, settings=settings):
-                sec += x
-
-            for x in print_subcommands(child, nested_content + subcontent, markdown_help, settings=settings, domain=domain):
-                sec += x
-
-            if 'epilog' in child and child['epilog']:
-                for element in render_list([child['epilog']], markdown_help):
-                    sec += element
-
-            subcommands += sec
-        items.append(subcommands)
-
-    return items
-
-
 def ensure_unique_ids(items):
     """
     If action groups are repeated, then links in the table of contents will
@@ -284,6 +224,8 @@ class ArgParseDirective(Directive):
         markdownhelp=flag,
         idxgroups=unchanged,
     )
+    domain: Optional[SphinxArgParseDomain] = None
+    idxgroups: Optional[List[str]] = None
 
     def _construct_manpage_specific_structure(self, parser_info):
         """
@@ -461,6 +403,65 @@ class ArgParseDirective(Directive):
         # raise exception
         raise FileNotFoundError(self.options['filename'])
 
+    def _print_subcommands(self, data, nested_content, markdown_help=False, settings=None):
+        """
+        Each subcommand is a dictionary with the following keys:
+
+        ['usage', 'action_groups', 'bare_usage', 'name', 'help']
+
+        In essence, this is all tossed in a new section with the title 'name'.
+        Apparently there can also be a 'description' entry.
+        """
+
+        definitions = map_nested_definitions(nested_content)
+        items = []
+        if 'children' in data:
+            subcommands = nodes.section(ids=["Sub-commands"])
+            subcommands += nodes.title('Sub-commands', 'Sub-commands')
+
+            for child in data['children']:
+                sec = nodes.section(ids=[child['name'], command_anchor_id(child)])
+                sec += nodes.title(child['name'], child['name'])
+
+                if self.domain:
+                    self.domain.add_command(child, self.idxgroups)
+
+                if 'description' in child and child['description']:
+                    desc = [child['description']]
+                elif child['help']:
+                    desc = [child['help']]
+                else:
+                    desc = ['Undocumented']
+
+                # Handle nested content
+                subcontent = []
+                if child['name'] in definitions:
+                    classifier, s, subcontent = definitions[child['name']]
+                    if classifier == '@replace':
+                        desc = [s]
+                    elif classifier == '@after':
+                        desc.append(s)
+                    elif classifier == '@before':
+                        desc.insert(0, s)
+
+                for element in render_list(desc, markdown_help):
+                    sec += element
+                sec += nodes.literal_block(text=child['bare_usage'])
+                for x in print_action_groups(child, nested_content + subcontent, markdown_help, settings=settings):
+                    sec += x
+
+                for x in self._print_subcommands(child, nested_content + subcontent, markdown_help, settings=settings):
+                    sec += x
+
+                if 'epilog' in child and child['epilog']:
+                    for element in render_list([child['epilog']], markdown_help):
+                        sec += element
+
+                subcommands += sec
+            items.append(subcommands)
+
+        return items
+
     def run(self):
         # Domain is used to add an optional index of commands.
         env = self.state.document.settings.env
@@ -541,16 +542,16 @@ class ArgParseDirective(Directive):
 
         if 'idxgroups' in self.options:
             try:
-                idxgroups = ast.literal_eval(self.options['idxgroups'])
+                self.idxgroups = ast.literal_eval(self.options['idxgroups'])
             except (SyntaxError, ValueError):
                 message = f"""Error in "{self.name}". In file "{env.doc2path(env.docname, False)}"
                 failed to parse idxgroups as a list: "{self.state_machine.line.strip()}".
                 """
                 raise self.error(message)
-            idxgroups = [x.strip() for x in idxgroups]
+            self.idxgroups = [x.strip() for x in self.idxgroups]
         else:
-            idxgroups = []
-        domain.add_command(result, idxgroups)
+            self.idxgroups = []
+        domain.add_command(result, self.idxgroups)
 
         items.append(nodes.literal_block(text=result['usage']))
         items.extend(
@@ -563,13 +564,11 @@ class ArgParseDirective(Directive):
         )
         if 'nosubcommands' not in self.options:
             items.extend(
-                print_subcommands(
+                self._print_subcommands(
                     result,
                     nested_content,
                     markdown_help,
                     settings=self.state.document.settings,
-                    domain=domain,
-                    idxgroups=idxgroups,
                 )
             )
         if 'epilog' in result and 'noepilog' not in self.options:
@@ -609,24 +608,24 @@ def configure_ext(app: Sphinx) -> None:
     by_group_index = CommandsByGroupIndex
     build_index = False
     build_by_group_index = False
-    if 'command_by_group_index_file_suffix' in conf:
+    if 'commands_by_group_index_file_suffix' in conf:
         build_by_group_index = True
-        by_group_index.name = conf['command_by_group_index_file_suffix']
-    if 'command_by_group_index_title' in conf:
+        by_group_index.name = conf.get('commands_by_group_index_file_suffix')
+    if 'commands_by_group_index_title' in conf:
         build_by_group_index = True
-        by_group_index.localname = conf['command_by_group_index_title']
-    if 'command_index_in_toctree' in conf and conf['command_index_in_toctree'] is not False:
+        by_group_index.localname = conf.get('commands_by_group_index_title')
+    if ('commands_index_in_toctree', True) in conf.items():
         build_index = True
         docname = f"{SphinxArgParseDomain.name}-{CommandsIndex.name}.rst"
         create_temp_dummy_file(app, domain, docname, f"{CommandsIndex.localname}")
-    if 'command_by_group_index_in_toctree' in conf and conf['command_by_group_index_in_toctree'] is not False:
+    if ('commands_by_group_index_in_toctree', True) in conf.items():
         build_by_group_index = True
         docname = f"{SphinxArgParseDomain.name}-{by_group_index.name}.rst"
         create_temp_dummy_file(app, domain, docname, f"{by_group_index.localname}")
 
-    if build_index or ('build_command_index' in conf and conf['build_command_index'] is not False):
+    if build_index or ('build_commands_index', True) in conf.items():
         domain.indices.append(CommandsIndex)  # type: ignore
-    if build_by_group_index or ('build_command_by_group_index' in conf and conf['build_command_by_group_index'] is not False):
+    if build_by_group_index or ('build_commands_by_group_index', True) in conf.items():
         domain.indices.append(by_group_index)  # type: ignore
 
     # Call setup so that :ref:`commands-...` are link targets.
