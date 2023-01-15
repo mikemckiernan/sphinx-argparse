@@ -17,7 +17,7 @@ from sphinx.util.nodes import nested_parse_with_titles
 
 from sphinxarg.commands_index import CommandsByGroupIndex, CommandsIndex, SphinxArgParseDomain
 from sphinxarg.parser import parse_parser, parser_navigate
-from sphinxarg.utils import command_anchor_id
+from sphinxarg.utils import command_anchor_id, command_pos_args
 
 from . import __version__
 
@@ -415,13 +415,18 @@ class ArgParseDirective(Directive):
 
         definitions = map_nested_definitions(nested_content)
         items = []
+        conf = self.state.document.settings.env.config.sphinx_argparse_conf
         if 'children' in data:
-            subcommands = nodes.section(ids=["Sub-commands"])
+            subcommands = nodes.section(ids=["Sub-commands", command_anchor_id(data) + "sub-commands"])
             subcommands += nodes.title('Sub-commands', 'Sub-commands')
 
             for child in data['children']:
                 sec = nodes.section(ids=[child['name'], command_anchor_id(child)])
-                sec += nodes.title(child['name'], child['name'])
+                if ('full_subcommand_name', True) in conf.items():
+                    title = nodes.title(command_pos_args(child), command_pos_args(child))
+                else:
+                    title = nodes.title(child['name'], child['name'])
+                sec += title
 
                 if self.domain:
                     self.domain.add_command(child, self.idxgroups)
