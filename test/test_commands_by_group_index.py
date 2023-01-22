@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from sphinxarg.commands_index import CommandsByGroupIndex
+from sphinxarg.ext import CommandsByGroupIndex
 
 from .conftest import check_xpath, flat_dict
 

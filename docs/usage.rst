@@ -68,6 +68,11 @@ working dir.
 
 That's it. Directives will render positional arguments, options and sub-commands.
 
+.. _about-subcommands:
+
+About Sub-Commands
+==================
+
 Sub-commands are limited to one level. But, you can always output help for subcommands separately::
 
     .. argparse::
@@ -105,6 +110,23 @@ Other useful directives
 :idxgroups: This option is related to grouping related commands in an index.
 
 
+Printing Fully Qualified Sub-Command Headings
+=============================================
+
+By default, when a command has sub-commands, such as ``fancytool install`` shown in the
+:ref:`about-subcommands` section, the heading for the sub-command does not include the command name.
+For instance, the the heading is **install** rather than **fancytool install**.
+
+If you prefer to show the full command, **fancytool install**, then you can enable
+the option in the ``conf.py`` for your project:
+
+.. code-block:: python
+
+   sphinx_argparse_conf = {
+     "full_subcommand_name": True,
+   }
+
+
 Indices
 =======
 
@@ -118,7 +140,7 @@ Simple Command Index
 
 To enable the simple command index, add the following to the project ``conf.py`` file:
 
-.. code:: python
+.. code-block:: python
 
     sphinx_argparse_conf = {
       "build_commands_index": True,
@@ -140,7 +162,7 @@ Commands by Group Index
 
 To enable the more complex index, add the following to the project ``conf.py`` file:
 
-.. code:: python
+.. code-block:: python
 
     sphinx_argparse_conf = {
       "build_commands_by_group_index": True,
@@ -150,7 +172,7 @@ To enable the more complex index, add the following to the project ``conf.py`` f
 Add the ``:idxgroups:`` option to the ``argparse`` directive in your documentation files.
 Specify one or more groups that the command belongs to.
 
-.. code:: reStructuredText
+.. code-block:: reStructuredText
 
     .. argparse::
        :filename: ../test/sample.py
@@ -165,7 +187,7 @@ Like the simple index, the ``commands_by_group_index_in_toctree`` option enables
 
 This index has two more options.
 
-.. code:: python
+.. code-block:: python
 
     sphinx_argparse_conf = {
       "commands_by_group_index_in_toctree": True,
@@ -191,7 +213,7 @@ If you want to customize the appearance of an index, copy the default ``domainin
 If you want to customize both indices, but one template cannot accommodate both of them, you can create an additional index template, such as ``customindex.html``.
 You can configure Sphinx to use the additional template for an index by modifying the ``conf.py`` for the project like the following example.
 
-.. code:: python
+.. code-block:: python
 
    def page_template(app: "Sphinx", pagename, templatename, context, doctree) -> str:
        if pagename == "commands-by-group":

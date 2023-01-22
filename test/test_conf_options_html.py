@@ -12,7 +12,7 @@ from .conftest import check_xpath, flat_dict
             'index.html': [
                 (".//h1", 'Sample'),
                 (".//h2", 'Sub-commands'),
-                (".//h3", 'sample-directive-opts A'),
+                (".//h3", 'sample-directive-opts A'),  # By default, just "A".
                 (".//h3", 'sample-directive-opts B'),
             ],
         }
