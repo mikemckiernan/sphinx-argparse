@@ -99,94 +99,6 @@ def render_list(l, markdown_help, settings=None):
         return all_children
 
 
-def print_action_groups(data, nested_content, markdown_help=False, settings=None):
-    """
-    Process all 'action groups', which are also include 'Options' and 'Required
-    arguments'. A list of nodes is returned.
-    """
-    definitions = map_nested_definitions(nested_content)
-    nodes_list = []
-    if 'action_groups' in data:
-        for action_group in data['action_groups']:
-            # Every action group is comprised of a section, holding a title, the description, and the option group (members)
-            section = nodes.section(ids=[action_group['title'].replace(' ', '-').lower()])
-            section += nodes.title(action_group['title'], action_group['title'])
-
-            desc = []
-            if action_group['description']:
-                desc.append(action_group['description'])
-            # Replace/append/prepend content to the description according to nested content
-            subcontent = []
-            if action_group['title'] in definitions:
-                classifier, s, subcontent = definitions[action_group['title']]
-                if classifier == '@replace':
-                    desc = [s]
-                elif classifier == '@after':
-                    desc.append(s)
-                elif classifier == '@before':
-                    desc.insert(0, s)
-                elif classifier == '@skip':
-                    continue
-                if len(subcontent) > 0:
-                    for k, v in map_nested_definitions(subcontent).items():
-                        definitions[k] = v
-            # Render appropriately
-            for element in render_list(desc, markdown_help):
-                section += element
-
-            local_definitions = definitions
-            if len(subcontent) > 0:
-                local_definitions = {k: v for k, v in definitions.items()}
-                for k, v in map_nested_definitions(subcontent).items():
-                    local_definitions[k] = v
-
-            items = []
-            # Iterate over action group members
-            for entry in action_group['options']:
-                # Members will include:
-                #    default	The default value. This may be ==SUPPRESS==
-                #    name	A list of option names (e.g., ['-h', '--help']
-                #    help	The help message string
-                # There may also be a 'choices' member.
-                # Build the help text
-                arg = []
-                if 'choices' in entry:
-                    arg.append(f"Possible choices: {', '.join(str(c) for c in entry['choices'])}\n")
-                if 'help' in entry:
-                    arg.append(entry['help'])
-                if entry['default'] is not None and entry['default'] not in [
-                    '"==SUPPRESS=="',
-                    '==SUPPRESS==',
-                ]:
-                    if entry['default'] == '':
-                        arg.append('Default: ""')
-                    else:
-                        arg.append(f"Default: {entry['default']}")
-
-                # Handle nested content, the term used in the dict has the comma removed for simplicity
-                desc = arg
-                term = ' '.join(entry['name'])
-                if term in local_definitions:
-                    classifier, s, subcontent = local_definitions[term]
-                    if classifier == '@replace':
-                        desc = [s]
-                    elif classifier == '@after':
-                        desc.append(s)
-                    elif classifier == '@before':
-                        desc.insert(0, s)
-                term = ', '.join(entry['name'])
-
-                n = nodes.option_list_item(
-                    '',
-                    nodes.option_group('', nodes.option_string(text=term)),
-                    nodes.description('', *render_list(desc, markdown_help, settings)),
-                )
-                items.append(n)
-
-            section += nodes.option_list('', *items)
-            nodes_list.append(section)
-
-    return nodes_list
 
 
 def ensure_unique_ids(items):
@@ -437,7 +349,7 @@ class ArgParseDirective(SphinxDirective):
             self.set_source_info(target)
             self.state.document.note_explicit_target(target)
 
-            subcommands = nodes.section(ids=["Sub-commands", node_id])
+            subcommands = nodes.section(ids=[node_id, "Sub-commands"])
             subcommands += nodes.title('Sub-commands', 'Sub-commands')
 
             for child in data['children']:
@@ -447,7 +359,7 @@ class ArgParseDirective(SphinxDirective):
                 self.set_source_info(target)
                 self.state.document.note_explicit_target(target)
 
-                sec = nodes.section(ids=[child['name'], node_id])
+                sec = nodes.section(ids=[node_id, child['name']])
                 if ('full_subcommand_name', True) in conf.items():
                     title = nodes.title(full_command, full_command)
                 else:
@@ -477,7 +389,7 @@ class ArgParseDirective(SphinxDirective):
                 for element in render_list(desc, markdown_help):
                     sec += element
                 sec += nodes.literal_block(text=child['bare_usage'])
-                for x in print_action_groups(child, nested_content + subcontent, markdown_help, settings=settings):
+                for x in self._print_action_groups(child, nested_content + subcontent, markdown_help, settings=settings):
                     sec += x
 
                 for x in self._print_subcommands(child, nested_content + subcontent, markdown_help, settings=settings):
@@ -491,6 +403,101 @@ class ArgParseDirective(SphinxDirective):
             items.append(subcommands)
 
         return items
+
+    def _print_action_groups(self, data, nested_content, markdown_help=False, settings=None):
+        """
+        Process all 'action groups', which are also include 'Options' and 'Required
+        arguments'. A list of nodes is returned.
+        """
+        definitions = map_nested_definitions(nested_content)
+        nodes_list = []
+        if 'action_groups' in data:
+            for action_group in data['action_groups']:
+                # Every action group is comprised of a section, holding a title, the description, and the option group (members)
+                full_command = command_pos_args(data)
+                node_id = make_id(self.env, self.state.document, None, full_command + "-" + action_group['title'].replace(' ', '-').lower())
+                target = nodes.target('', '', ids=[node_id])
+                self.set_source_info(target)
+                self.state.document.note_explicit_target(target)
+
+                section = nodes.section(ids=[node_id, action_group['title'].replace(' ', '-').lower()])
+                section += nodes.title(action_group['title'], action_group['title'])
+
+                desc = []
+                if action_group['description']:
+                    desc.append(action_group['description'])
+                # Replace/append/prepend content to the description according to nested content
+                subcontent = []
+                if action_group['title'] in definitions:
+                    classifier, s, subcontent = definitions[action_group['title']]
+                    if classifier == '@replace':
+                        desc = [s]
+                    elif classifier == '@after':
+                        desc.append(s)
+                    elif classifier == '@before':
+                        desc.insert(0, s)
+                    elif classifier == '@skip':
+                        continue
+                    if len(subcontent) > 0:
+                        for k, v in map_nested_definitions(subcontent).items():
+                            definitions[k] = v
+                # Render appropriately
+                for element in render_list(desc, markdown_help):
+                    section += element
+
+                local_definitions = definitions
+                if len(subcontent) > 0:
+                    local_definitions = {k: v for k, v in definitions.items()}
+                    for k, v in map_nested_definitions(subcontent).items():
+                        local_definitions[k] = v
+
+                items = []
+                # Iterate over action group members
+                for entry in action_group['options']:
+                    # Members will include:
+                    #    default	The default value. This may be ==SUPPRESS==
+                    #    name	A list of option names (e.g., ['-h', '--help']
+                    #    help	The help message string
+                    # There may also be a 'choices' member.
+                    # Build the help text
+                    arg = []
+                    if 'choices' in entry:
+                        arg.append(f"Possible choices: {', '.join(str(c) for c in entry['choices'])}\n")
+                    if 'help' in entry:
+                        arg.append(entry['help'])
+                    if entry['default'] is not None and entry['default'] not in [
+                        '"==SUPPRESS=="',
+                        '==SUPPRESS==',
+                    ]:
+                        if entry['default'] == '':
+                            arg.append('Default: ""')
+                        else:
+                            arg.append(f"Default: {entry['default']}")
+
+                    # Handle nested content, the term used in the dict has the comma removed for simplicity
+                    desc = arg
+                    term = ' '.join(entry['name'])
+                    if term in local_definitions:
+                        classifier, s, subcontent = local_definitions[term]
+                        if classifier == '@replace':
+                            desc = [s]
+                        elif classifier == '@after':
+                            desc.append(s)
+                        elif classifier == '@before':
+                            desc.insert(0, s)
+                    term = ', '.join(entry['name'])
+
+                    n = nodes.option_list_item(
+                        '',
+                        nodes.option_group('', nodes.option_string(text=term)),
+                        nodes.description('', *render_list(desc, markdown_help, settings)),
+                    )
+                    items.append(n)
+
+                section += nodes.option_list('', *items)
+                nodes_list.append(section)
+
+        return nodes_list
 
     def run(self):
         self.domain = cast(SphinxArgParseDomain, self.env.get_domain(SphinxArgParseDomain.name))
@@ -591,7 +598,7 @@ class ArgParseDirective(SphinxDirective):
 
         items.append(nodes.literal_block(text=result['usage']))
         items.extend(
-            print_action_groups(
+            self._print_action_groups(
                 result,
                 nested_content,
                 markdown_help,
