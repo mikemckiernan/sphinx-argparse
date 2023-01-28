@@ -590,14 +590,16 @@ class ArgParseDirective(SphinxDirective):
         self.domain.add_command(result, node_id, self.idxgroups)
 
         items.append(nodes.literal_block(text=result['usage']))
-        items.extend(
-            print_action_groups(
-                result,
-                nested_content,
-                markdown_help,
-                settings=self.state.document.settings,
+
+        if 'sphinx_argparse_conf' not in self.config.values or not self.config['sphinx_argparse_conf'].get('subcommands_only'):
+            items.extend(
+                print_action_groups(
+                    result,
+                    nested_content,
+                    markdown_help,
+                    settings=self.state.document.settings,
+                )
             )
-        )
         if 'nosubcommands' not in self.options:
             items.extend(
                 self._print_subcommands(
