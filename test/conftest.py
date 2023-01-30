@@ -55,7 +55,7 @@ class SphinxBuilder:
         return doctree
 
 
-@pytest.fixture(scope='module')
+@pytest.fixture(scope='function')
 def cached_etree_parse():
     def parse(fname):
         if fname in etree_cache:

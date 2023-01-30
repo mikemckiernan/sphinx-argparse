@@ -99,8 +99,6 @@ def render_list(l, markdown_help, settings=None):
         return all_children
 
 
-
-
 def ensure_unique_ids(items):
     """
     If action groups are repeated, then links in the table of contents will
@@ -338,9 +336,8 @@ class ArgParseDirective(SphinxDirective):
 
         definitions = map_nested_definitions(nested_content)
         items = []
-        env = self.state.document.settings.env
-        conf = env.config.sphinx_argparse_conf
-        domain = cast(SphinxArgParseDomain, env.domains[SphinxArgParseDomain.name])
+        conf = self.env.config.sphinx_argparse_conf
+        domain = cast(SphinxArgParseDomain, self.env.domains[SphinxArgParseDomain.name])
 
         if 'children' in data:
             full_command = command_pos_args(data)
@@ -351,6 +348,7 @@ class ArgParseDirective(SphinxDirective):
 
             subcommands = nodes.section(ids=[node_id, "Sub-commands"])
             subcommands += nodes.title('Sub-commands', 'Sub-commands')
+            subcommands['classes'] += conf.get('classes') or []
 
             for child in data['children']:
                 full_command = command_pos_args(child)
@@ -365,6 +363,7 @@ class ArgParseDirective(SphinxDirective):
                 else:
                     title = nodes.title(child['name'], child['name'])
                 sec += title
+                sec['classes'] += conf.get('classes') or []
 
                 domain.add_command(child, node_id, self.idxgroups)
 
@@ -388,7 +387,11 @@ class ArgParseDirective(SphinxDirective):
 
                 for element in render_list(desc, markdown_help):
                     sec += element
-                sec += nodes.literal_block(text=child['bare_usage'])
+
+                usage = nodes.literal_block(text=child['bare_usage'])
+                usage['classes'] += conf.get('classes') or []
+                sec += usage
+
                 for x in self._print_action_groups(child, nested_content + subcontent, markdown_help, settings=settings):
                     sec += x
 
@@ -411,6 +414,8 @@ class ArgParseDirective(SphinxDirective):
         """
         definitions = map_nested_definitions(nested_content)
         nodes_list = []
+        conf = self.env.config.sphinx_argparse_conf
+
         if 'action_groups' in data:
             for action_group in data['action_groups']:
                 # Every action group is comprised of a section, holding a title, the description, and the option group (members)
@@ -422,6 +427,7 @@ class ArgParseDirective(SphinxDirective):
 
                 section = nodes.section(ids=[node_id, action_group['title'].replace(' ', '-').lower()])
                 section += nodes.title(action_group['title'], action_group['title'])
+                section['classes'] += conf.get('classes') or []
 
                 desc = []
                 if action_group['description']:
@@ -501,6 +507,7 @@ class ArgParseDirective(SphinxDirective):
 
     def run(self):
         self.domain = cast(SphinxArgParseDomain, self.env.get_domain(SphinxArgParseDomain.name))
+        conf = self.env.config.sphinx_argparse_conf
 
         if 'module' in self.options and 'func' in self.options:
             module_name = self.options['module']
@@ -596,7 +603,9 @@ class ArgParseDirective(SphinxDirective):
 
         self.domain.add_command(result, node_id, self.idxgroups)
 
-        items.append(nodes.literal_block(text=result['usage']))
+        usage = nodes.literal_block(text=result['usage'])
+        usage['classes'] += conf.get('classes') or []
+        items.append(usage)
         items.extend(
             self._print_action_groups(
                 result,
