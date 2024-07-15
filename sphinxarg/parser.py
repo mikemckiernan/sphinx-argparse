@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import contextlib
 import re
 from argparse import _HelpAction, _StoreConstAction, _SubParsersAction
 
@@ -15,7 +18,8 @@ def parser_navigate(parser_result, path, current_path=None):
     if len(path) == 0:
         return parser_result
     if 'children' not in parser_result:
-        raise NavigationException(f"Current parser has no child elements.  (path: {' '.join(current_path)})")
+        msg = f"Current parser has no child elements.  (path: {' '.join(current_path)})"
+        raise NavigationException(msg)
     next_hop = path.pop(0)
     for child in parser_result['children']:
         # identifer is only used for aliased subcommands
@@ -23,7 +27,11 @@ def parser_navigate(parser_result, path, current_path=None):
         if identifier == next_hop:
             current_path.append(next_hop)
             return parser_navigate(child, path, current_path)
-    raise NavigationException(f"Current parser has no child element with name: {next_hop}  (path: {' '.join(current_path)})")
+    msg = (
+        f"Current parser has no child element with name: {next_hop} "
+        f"(path: {' '.join(current_path)})"
+    )
+    raise NavigationException(msg)
 
 
 def _try_add_parser_attribute(data, parser, attribname):
@@ -84,7 +92,13 @@ def parse_parser(parser, data=None, **kwargs):
                 'help': helps.get(name, ''),
                 'usage': subaction.format_usage().strip(),
                 'bare_usage': _format_usage_without_prefix(subaction),
+                'parent': {
+                    'name': '' if 'name' not in data else data['name'],
+                    'prog': '' if 'prog' not in data else data['prog'],
+                },
             }
+            if 'parent' in data:
+                subdata['parent'].update({'parent': data['parent']})
             if subalias:
                 subdata['identifier'] = name
             parse_parser(subaction, subdata, **kwargs)
@@ -110,25 +124,24 @@ def parse_parser(parser, data=None, **kwargs):
 
             # Quote default values for string/None types
             default = action.default
-            if action.default not in ['', None, True, False] and action.type in [None, str] and isinstance(action.default, str):
-                default = f'"{default}"'
+            if (
+                action.default not in ['', None, True, False]
+                and action.type in [None, str]
+                and isinstance(action.default, str)
+            ):
+                default = f"'{default}'"
 
             # fill in any formatters, like %(default)s
             format_dict = dict(vars(action), prog=data.get('prog', ''), default=default)
             format_dict['default'] = default
             help_str = action.help or ''  # Ensure we don't print None
-            try:
+            with contextlib.suppress(Exception):
                 help_str = help_str % format_dict
-            except Exception:
-                pass
 
             # Options have the option_strings set, positional arguments don't
             name = action.option_strings
             if name == []:
-                if action.metavar is None:
-                    name = [action.dest]
-                else:
-                    name = [action.metavar]
+                name = [action.dest] if action.metavar is None else [action.metavar]
             # Skip lines for subcommands
             if name == ['==SUPPRESS==']:
                 continue
@@ -147,16 +160,14 @@ def parse_parser(parser, data=None, **kwargs):
                 }
             if action.choices:
                 option['choices'] = action.choices
-            if "==SUPPRESS==" not in option['help']:
+            if '==SUPPRESS==' not in option['help']:
                 options_list.append(option)
 
         if len(options_list) == 0:
             continue
 
-        # Upper case "Positional Arguments" and "Optional Arguments" titles
-        # Since python-3.10 'optional arguments' changed to 'options'
-        # more info: https://github.com/python/cpython/pull/23858
-        if action_group.title == 'optional arguments' or action_group.title == 'options':
+        # Upper case "Positional Arguments" and "Named Arguments" titles
+        if action_group.title == 'options':
             action_group.title = 'Named Arguments'
         if action_group.title == 'positional arguments':
             action_group.title = 'Positional Arguments'

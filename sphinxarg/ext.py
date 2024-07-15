@@ -1,24 +1,49 @@
+from __future__ import annotations
+
+import importlib
+import operator
 import os
 import shutil
 import sys
 from argparse import ArgumentParser
+from typing import TYPE_CHECKING, cast
 
 from docutils import nodes
-from docutils.frontend import OptionParser
-from docutils.parsers.rst import Directive, Parser
+from docutils.frontend import get_default_settings
+from docutils.parsers.rst import Parser
 from docutils.parsers.rst.directives import flag, unchanged
 from docutils.statemachine import StringList
-from docutils.utils import new_document
-from sphinx.util.nodes import nested_parse_with_titles
+from sphinx.domains import Domain, Index, IndexEntry
+from sphinx.errors import ExtensionError
+from sphinx.ext.autodoc import mock
+from sphinx.roles import XRefRole
+from sphinx.util import logging
+from sphinx.util.docutils import SphinxDirective, new_document
+from sphinx.util.nodes import make_id, make_refnode, nested_parse_with_titles
 
+from sphinxarg import __version__
 from sphinxarg.parser import parse_parser, parser_navigate
+from sphinxarg.utils import command_pos_args, target_to_anchor_id
 
-from . import __version__
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
+    from pathlib import Path
+
+    from docutils.nodes import Element
+    from sphinx.addnodes import pending_xref
+    from sphinx.application import Sphinx
+    from sphinx.builders import Builder
+    from sphinx.environment import BuildEnvironment
+
+    _ObjectDescriptionTuple = tuple[str, str, str, str, str, int]
+
+logger = logging.getLogger(__name__)
 
 
 def map_nested_definitions(nested_content):
     if nested_content is None:
-        raise Exception('Nested content should be iterable, not null')
+        msg = 'Nested content should be iterable, not null'
+        raise Exception(msg)
     # build definition dictionary
     definitions = {}
     for item in nested_content:
@@ -35,13 +60,14 @@ def map_nested_definitions(nested_content):
                 ci = subitem[idx]
                 if len(ci.children) > 0:
                     classifier = ci.children[0].astext()
-            if classifier is not None and classifier not in (
+            if classifier is not None and classifier not in {
                 '@replace',
                 '@before',
                 '@after',
                 '@skip',
-            ):
-                raise Exception(f'Unknown classifier: {classifier}')
+            }:
+                msg = f'Unknown classifier: {classifier}'
+                raise Exception(msg)
             idx = subitem.first_child_matching_class(nodes.term)
             if idx is not None:
                 term = subitem[idx]
@@ -49,10 +75,9 @@ def map_nested_definitions(nested_content):
                     term = term.children[0].astext()
                     idx = subitem.first_child_matching_class(nodes.definition)
                     if idx is not None:
-                        subcontent = []
-                        for _ in subitem[idx]:
-                            if isinstance(_, nodes.definition_list):
-                                subcontent.append(_)
+                        subcontent = [
+                            _ for _ in subitem[idx] if isinstance(_, nodes.definition_list)
+                        ]
                         definitions[term] = (classifier, subitem[idx], subcontent)
 
     return definitions
@@ -69,165 +94,18 @@ def render_list(l, markdown_help, settings=None):
 
         return parse_markdown_block('\n\n'.join(l) + '\n')
     else:
+        if settings is None:
+            settings = get_default_settings(Parser)
         all_children = []
         for element in l:
             if isinstance(element, str):
-                if settings is None:
-                    settings = OptionParser(components=(Parser,)).get_default_values()
-                document = new_document(None, settings)
+                document = new_document('', settings)
                 Parser().parse(element + '\n', document)
                 all_children += document.children
             elif isinstance(element, nodes.definition):
                 all_children += element
 
         return all_children
-
-
-def print_action_groups(data, nested_content, markdown_help=False, settings=None):
-    """
-    Process all 'action groups', which are also include 'Options' and 'Required
-    arguments'. A list of nodes is returned.
-    """
-    definitions = map_nested_definitions(nested_content)
-    nodes_list = []
-    if 'action_groups' in data:
-        for action_group in data['action_groups']:
-            # Every action group is comprised of a section, holding a title, the description, and the option group (members)
-            section = nodes.section(ids=[action_group['title'].replace(' ', '-').lower()])
-            section += nodes.title(action_group['title'], action_group['title'])
-
-            desc = []
-            if action_group['description']:
-                desc.append(action_group['description'])
-            # Replace/append/prepend content to the description according to nested content
-            subcontent = []
-            if action_group['title'] in definitions:
-                classifier, s, subcontent = definitions[action_group['title']]
-                if classifier == '@replace':
-                    desc = [s]
-                elif classifier == '@after':
-                    desc.append(s)
-                elif classifier == '@before':
-                    desc.insert(0, s)
-                elif classifier == '@skip':
-                    continue
-                if len(subcontent) > 0:
-                    for k, v in map_nested_definitions(subcontent).items():
-                        definitions[k] = v
-            # Render appropriately
-            for element in render_list(desc, markdown_help):
-                section += element
-
-            local_definitions = definitions
-            if len(subcontent) > 0:
-                local_definitions = {k: v for k, v in definitions.items()}
-                for k, v in map_nested_definitions(subcontent).items():
-                    local_definitions[k] = v
-
-            items = []
-            # Iterate over action group members
-            for entry in action_group['options']:
-                # Members will include:
-                #    default	The default value. This may be ==SUPPRESS==
-                #    name	A list of option names (e.g., ['-h', '--help']
-                #    help	The help message string
-                # There may also be a 'choices' member.
-                # Build the help text
-                arg = []
-                if 'choices' in entry:
-                    arg.append(f"Possible choices: {', '.join(str(c) for c in entry['choices'])}\n")
-                if 'help' in entry:
-                    arg.append(entry['help'])
-                if entry['default'] is not None and entry['default'] not in [
-                    '"==SUPPRESS=="',
-                    '==SUPPRESS==',
-                ]:
-                    if entry['default'] == '':
-                        arg.append('Default: ""')
-                    else:
-                        arg.append(f"Default: {entry['default']}")
-
-                # Handle nested content, the term used in the dict has the comma removed for simplicity
-                desc = arg
-                term = ' '.join(entry['name'])
-                if term in local_definitions:
-                    classifier, s, subcontent = local_definitions[term]
-                    if classifier == '@replace':
-                        desc = [s]
-                    elif classifier == '@after':
-                        desc.append(s)
-                    elif classifier == '@before':
-                        desc.insert(0, s)
-                term = ', '.join(entry['name'])
-
-                n = nodes.option_list_item(
-                    '',
-                    nodes.option_group('', nodes.option_string(text=term)),
-                    nodes.description('', *render_list(desc, markdown_help, settings)),
-                )
-                items.append(n)
-
-            section += nodes.option_list('', *items)
-            nodes_list.append(section)
-
-    return nodes_list
-
-
-def print_subcommands(data, nested_content, markdown_help=False, settings=None):  # noqa: N803
-    """
-    Each subcommand is a dictionary with the following keys:
-
-    ['usage', 'action_groups', 'bare_usage', 'name', 'help']
-
-    In essence, this is all tossed in a new section with the title 'name'.
-    Apparently there can also be a 'description' entry.
-    """
-
-    definitions = map_nested_definitions(nested_content)
-    items = []
-    if 'children' in data:
-        subcommands = nodes.section(ids=["Sub-commands"])
-        subcommands += nodes.title('Sub-commands', 'Sub-commands')
-
-        for child in data['children']:
-            sec = nodes.section(ids=[child['name']])
-            sec += nodes.title(child['name'], child['name'])
-
-            if 'description' in child and child['description']:
-                desc = [child['description']]
-            elif child['help']:
-                desc = [child['help']]
-            else:
-                desc = ['Undocumented']
-
-            # Handle nested content
-            subcontent = []
-            if child['name'] in definitions:
-                classifier, s, subcontent = definitions[child['name']]
-                if classifier == '@replace':
-                    desc = [s]
-                elif classifier == '@after':
-                    desc.append(s)
-                elif classifier == '@before':
-                    desc.insert(0, s)
-
-            for element in render_list(desc, markdown_help):
-                sec += element
-            sec += nodes.literal_block(text=child['bare_usage'])
-            for x in print_action_groups(child, nested_content + subcontent, markdown_help, settings=settings):
-                sec += x
-
-            for x in print_subcommands(child, nested_content + subcontent, markdown_help, settings=settings):
-                sec += x
-
-            if 'epilog' in child and child['epilog']:
-                for element in render_list([child['epilog']], markdown_help):
-                    sec += element
-
-            subcommands += sec
-        items.append(subcommands)
-
-    return items
 
 
 def ensure_unique_ids(items):
@@ -240,7 +118,7 @@ def ensure_unique_ids(items):
     """
     s = set()
     for item in items:
-        for n in item.traverse(descend=True, siblings=True, ascend=False):
+        for n in item.findall(descend=True, siblings=True, ascend=False):
             if isinstance(n, nodes.section):
                 ids = n['ids']
                 for idx, id in enumerate(ids):
@@ -248,32 +126,35 @@ def ensure_unique_ids(items):
                         s.add(id)
                     else:
                         i = 1
-                        while f"{id}_repeat{i}" in s:
+                        while f'{id}_repeat{i}' in s:
                             i += 1
-                        ids[idx] = f"{id}_repeat{i}"
+                        ids[idx] = f'{id}_repeat{i}'
                         s.add(ids[idx])
                 n['ids'] = ids
 
 
-class ArgParseDirective(Directive):
+class ArgParseDirective(SphinxDirective):
     has_content = True
-    option_spec = dict(
-        module=unchanged,
-        func=unchanged,
-        ref=unchanged,
-        prog=unchanged,
-        path=unchanged,
-        nodefault=flag,
-        nodefaultconst=flag,
-        filename=unchanged,
-        manpage=unchanged,
-        nosubcommands=unchanged,
-        passparser=flag,
-        noepilog=unchanged,
-        nodescription=unchanged,
-        markdown=flag,
-        markdownhelp=flag,
-    )
+    required_arguments = 0
+    option_spec = {
+        'module': unchanged,
+        'func': unchanged,
+        'ref': unchanged,
+        'prog': unchanged,
+        'path': unchanged,
+        'nodefault': flag,
+        'nodefaultconst': flag,
+        'filename': unchanged,
+        'manpage': unchanged,
+        'nosubcommands': unchanged,
+        'passparser': flag,
+        'noepilog': unchanged,
+        'nodescription': unchanged,
+        'markdown': flag,
+        'markdownhelp': flag,
+        'index-groups': unchanged,
+    }
+    index_groups: Sequence[str] = ()
 
     def _construct_manpage_specific_structure(self, parser_info):
         """
@@ -291,7 +172,7 @@ class ArgParseDirective(Directive):
         synopsis_section = nodes.section(
             '',
             nodes.title(text='Synopsis'),
-            nodes.literal_block(text=parser_info["bare_usage"]),
+            nodes.literal_block(text=parser_info['bare_usage']),
             ids=['synopsis-section'],
         )
         items.append(synopsis_section)
@@ -303,7 +184,7 @@ class ArgParseDirective(Directive):
                 nodes.paragraph(
                     text=parser_info.get(
                         'description',
-                        parser_info.get('help', "undocumented").capitalize(),
+                        parser_info.get('help', 'undocumented').capitalize(),
                     )
                 ),
                 ids=['description-section'],
@@ -321,13 +202,15 @@ class ArgParseDirective(Directive):
                 description_section = nodes.paragraph(text=parser_info['epilog'])
                 items.append(description_section)
         # OPTIONS section
-        options_section = nodes.section('', nodes.title(text='Options'), ids=['options-section'])
+        options_section = nodes.section(
+            '', nodes.title(text='Options'), ids=['options-section']
+        )
         if 'args' in parser_info:
             options_section += nodes.paragraph()
             options_section += nodes.subtitle(text='Positional arguments:')
             options_section += self._format_positional_arguments(parser_info)
         for action_group in parser_info['action_groups']:
-            if 'options' in parser_info:
+            if 'options' in action_group:
                 options_section += nodes.paragraph()
                 options_section += nodes.subtitle(text=action_group['title'])
                 options_section += self._format_optional_arguments(action_group)
@@ -342,18 +225,20 @@ class ArgParseDirective(Directive):
             items.append(options_section)
         if 'nosubcommands' not in self.options:
             # SUBCOMMANDS section (non-standard)
-            subcommands_section = nodes.section('', nodes.title(text='Sub-Commands'), ids=['subcommands-section'])
+            subcommands_section = nodes.section(
+                '', nodes.title(text='Sub-Commands'), ids=['subcommands-section']
+            )
             if 'children' in parser_info:
                 subcommands_section += self._format_subcommands(parser_info)
             if len(subcommands_section) > 1:
                 items.append(subcommands_section)
-        if os.getenv("INCLUDE_DEBUG_SECTION"):
+        if os.getenv('INCLUDE_DEBUG_SECTION'):
             import json
 
             # DEBUG section (non-standard)
             debug_section = nodes.section(
                 '',
-                nodes.title(text="Argparse + Sphinx Debugging"),
+                nodes.title(text='Argparse + Sphinx Debugging'),
                 nodes.literal_block(text=json.dumps(parser_info, indent='  ')),
                 ids=['debug-section'],
             )
@@ -370,11 +255,15 @@ class ArgParseDirective(Directive):
             elif 'choices' not in arg:
                 arg_items.append(nodes.paragraph(text='Undocumented'))
             if 'choices' in arg:
-                arg_items.append(nodes.paragraph(text='Possible choices: ' + ', '.join(arg['choices'])))
+                arg_items.append(
+                    nodes.paragraph(text='Possible choices: ' + ', '.join(arg['choices']))
+                )
             items.append(
                 nodes.option_list_item(
                     '',
-                    nodes.option_group('', nodes.option('', nodes.option_string(text=arg['metavar']))),
+                    nodes.option_group(
+                        '', nodes.option('', nodes.option_string(text=arg['metavar']))
+                    ),
                     nodes.description('', *arg_items),
                 )
             )
@@ -388,18 +277,19 @@ class ArgParseDirective(Directive):
             opt_items = []
             for name in opt['name']:
                 option_declaration = [nodes.option_string(text=name)]
-                if opt['default'] is not None and opt['default'] not in [
-                    '"==SUPPRESS=="',
-                    '==SUPPRESS==',
-                ]:
-                    option_declaration += nodes.option_argument('', text='=' + str(opt['default']))
+                if not self._is_suppressed(opt['default']):
+                    option_declaration += nodes.option_argument(
+                        '', text='=' + str(opt['default'])
+                    )
                 names.append(nodes.option('', *option_declaration))
             if opt['help']:
                 opt_items.append(nodes.paragraph(text=opt['help']))
             elif 'choices' not in opt:
                 opt_items.append(nodes.paragraph(text='Undocumented'))
             if 'choices' in opt:
-                opt_items.append(nodes.paragraph(text='Possible choices: ' + ', '.join(opt['choices'])))
+                opt_items.append(
+                    nodes.paragraph(text='Possible choices: ' + ', '.join(opt['choices']))
+                )
             items.append(
                 nodes.option_list_item(
                     '',
@@ -429,7 +319,7 @@ class ArgParseDirective(Directive):
 
     def _nested_parse_paragraph(self, text):
         content = nodes.paragraph()
-        self.state.nested_parse(StringList(text.split("\n")), 0, content)
+        self.state.nested_parse(StringList(text.split('\n')), 0, content)
         return content
 
     def _open_filename(self):
@@ -446,10 +336,212 @@ class ArgParseDirective(Directive):
         # try open with shutil which
         try:
             return open(shutil.which(self.options['filename']))
-        except OSError:
+        except (OSError, TypeError):
             pass
         # raise exception
         raise FileNotFoundError(self.options['filename'])
+
+    def _print_subcommands(self, data, nested_content, markdown_help=False, settings=None):
+        """
+        Each subcommand is a dictionary with the following keys:
+
+        ['usage', 'action_groups', 'bare_usage', 'name', 'help']
+
+        In essence, this is all tossed in a new section with the title 'name'.
+        Apparently there can also be a 'description' entry.
+        """
+
+        definitions = map_nested_definitions(nested_content)
+        items = []
+        full_subcommand_name_true = (
+                ('full_subcommand_name', True) in self.config.sphinx_argparse_conf.items()
+        )
+        domain = cast(ArgParseDomain, self.env.domains[ArgParseDomain.name])
+
+        if 'children' in data:
+            full_command = command_pos_args(data)
+            node_id = make_id(
+                self.env, self.state.document, '', full_command + '-sub-commands'
+            )
+            target = nodes.target('', '', ids=[node_id])
+            self.set_source_info(target)
+            self.state.document.note_explicit_target(target)
+
+            subcommands = nodes.section(ids=['Sub-commands'])
+            subcommands += nodes.title('Sub-commands', 'Sub-commands')
+
+            for child in data['children']:
+                full_command = command_pos_args(child)
+                node_id = make_id(self.env, self.state.document, '', full_command)
+                target = nodes.target('', '', ids=[node_id])
+                self.set_source_info(target)
+                self.state.document.note_explicit_target(target)
+
+                sec = nodes.section(ids=[node_id, child['name']])
+                if full_subcommand_name_true:
+                    title = nodes.title(full_command, full_command)
+                else:
+                    title = nodes.title(child['name'], child['name'])
+                sec += title
+
+                domain.add_argparse_command(child, node_id, self.index_groups)
+
+                if 'description' in child and child['description']:
+                    desc = [child['description']]
+                elif child['help']:
+                    desc = [child['help']]
+                else:
+                    desc = ['Undocumented']
+
+                # Handle nested content
+                subcontent = []
+                if child['name'] in definitions:
+                    classifier, s, subcontent = definitions[child['name']]
+                    if classifier == '@replace':
+                        desc = [s]
+                    elif classifier == '@after':
+                        desc.append(s)
+                    elif classifier == '@before':
+                        desc.insert(0, s)
+
+                for element in render_list(desc, markdown_help):
+                    sec += element
+                sec += nodes.literal_block(text=child['bare_usage'])
+                for x in self._print_action_groups(
+                    child, nested_content + subcontent, markdown_help, settings=settings
+                ):
+                    sec += x
+
+                for x in self._print_subcommands(
+                    child, nested_content + subcontent, markdown_help, settings=settings
+                ):
+                    sec += x
+
+                if 'epilog' in child and child['epilog']:
+                    for element in render_list([child['epilog']], markdown_help):
+                        sec += element
+
+                subcommands += sec
+            items.append(subcommands)
+
+        return items
+
+    def _print_action_groups(
+        self,
+        data,
+        nested_content,
+        markdown_help=False,
+        settings=None,
+        id_prefix='',
+    ):
+        """
+        Process all 'action groups', which are also include 'Options' and 'Required
+        arguments'. A list of nodes is returned.
+        """
+        definitions = map_nested_definitions(nested_content)
+        nodes_list = []
+        if 'action_groups' in data:
+            for action_group in data['action_groups']:
+                # Every action group is composed of a section, holding
+                # a title, the description, and the option group (members)
+                title_as_id = action_group['title'].replace(' ', '-').lower()
+                full_command = command_pos_args(data)
+                node_id = make_id(
+                    self.env,
+                    self.state.document,
+                    '',
+                    full_command + '-' + title_as_id,
+                )
+                target = nodes.target('', '', ids=[node_id])
+                self.set_source_info(target)
+                self.state.document.note_explicit_target(target)
+
+                section = nodes.section(ids=[node_id, f'{id_prefix}-{title_as_id}'])
+                section += nodes.title(action_group['title'], action_group['title'])
+
+                desc = []
+                if action_group['description']:
+                    desc.append(action_group['description'])
+                # Replace/append/prepend content to the description according to nested content
+                subcontent = []
+                if action_group['title'] in definitions:
+                    classifier, s, subcontent = definitions[action_group['title']]
+                    if classifier == '@replace':
+                        desc = [s]
+                    elif classifier == '@after':
+                        desc.append(s)
+                    elif classifier == '@before':
+                        desc.insert(0, s)
+                    elif classifier == '@skip':
+                        continue
+                    if len(subcontent) > 0:
+                        for k, v in map_nested_definitions(subcontent).items():
+                            definitions[k] = v
+                # Render appropriately
+                for element in render_list(desc, markdown_help):
+                    section += element
+
+                local_definitions = definitions
+                if len(subcontent) > 0:
+                    local_definitions = dict(definitions.items())
+                    for k, v in map_nested_definitions(subcontent).items():
+                        local_definitions[k] = v
+
+                items = []
+                # Iterate over action group members
+                for entry in action_group['options']:
+                    # Members will include:
+                    #    default	The default value. This may be ==SUPPRESS==
+                    #    name	A list of option names (e.g., ['-h', '--help']
+                    #    help	The help message string
+                    # There may also be a 'choices' member.
+                    # Build the help text
+                    arg = []
+                    if 'choices' in entry:
+                        arg.append(
+                            f"Possible choices: {', '.join(map(str, entry['choices']))}\n"
+                        )
+                    if 'help' in entry:
+                        arg.append(entry['help'])
+                    if not self._is_suppressed(entry['default']):
+                        # Put the default value in a literal block,
+                        # but escape backticks already in the string
+                        default_str = str(entry['default']).replace('`', r'\`')
+                        arg.append(f'Default: ``{default_str}``')
+
+                    # Handle nested content, the term used in the dict
+                    # has the comma removed for simplicity
+                    desc = arg
+                    term = ' '.join(entry['name'])
+                    if term in local_definitions:
+                        classifier, s, subcontent = local_definitions[term]
+                        if classifier == '@replace':
+                            desc = [s]
+                        elif classifier == '@after':
+                            desc.append(s)
+                        elif classifier == '@before':
+                            desc.insert(0, s)
+                    term = ', '.join(entry['name'])
+
+                    n = nodes.option_list_item(
+                        '',
+                        nodes.option_group('', nodes.option_string(text=term)),
+                        nodes.description('', *render_list(desc, markdown_help, settings)),
+                    )
+                    items.append(n)
+
+                section += nodes.option_list('', *items)
+                nodes_list.append(section)
+
+        return nodes_list
+
+    @staticmethod
+    def _is_suppressed(item: str | None) -> bool:
+        """Return whether item should not be printed."""
+        if item is None:
+            return True
+        item = str(item).replace('"', '').replace("'", '')
+        return item == '==SUPPRESS=='
 
     def run(self):
         if 'module' in self.options and 'func' in self.options:
@@ -464,21 +556,32 @@ class ArgParseDirective(Directive):
             f = self._open_filename()
             code = compile(f.read(), self.options['filename'], 'exec')
             exec(code, mod)
+            module_name = None
             attr_name = self.options['func']
             func = mod[attr_name]
         else:
-            raise self.error(':module: and :func: should be specified, or :ref:, or :filename: and :func:')
+            msg = ':module: and :func: should be specified, or :ref:, or :filename: and :func:'
+            raise self.error(msg)
 
         # Skip this if we're dealing with a local file, since it obviously can't be imported
         if 'filename' not in self.options:
-            try:
-                mod = __import__(module_name, globals(), locals(), [attr_name])
-            except ImportError:
-                raise self.error(f'Failed to import "{attr_name}" from "{module_name}".\n{sys.exc_info()[1]}')
+            with mock(self.config.autodoc_mock_imports):
+                try:
+                    mod = importlib.import_module(module_name)
+                except ImportError as exc:
+                    msg = (
+                        f'Failed to import "{attr_name}" from "{module_name}".\n'
+                        f'{sys.exc_info()[1]}'
+                    )
+                    raise self.error(msg) from exc
 
-            if not hasattr(mod, attr_name):
-                raise self.error(('Module "%s" has no attribute "%s"\nIncorrect argparse :module: or :func: values?') % (module_name, attr_name))
-            func = getattr(mod, attr_name)
+                if not hasattr(mod, attr_name):
+                    msg = (
+                        f'Module "{module_name}" has no attribute "{attr_name}"\n'
+                        f'Incorrect argparse :module: or :func: values?'
+                    )
+                    raise self.error(msg)
+                func = getattr(mod, attr_name)
 
         if isinstance(func, ArgumentParser):
             parser = func
@@ -512,9 +615,9 @@ class ArgParseDirective(Directive):
             self.state.nested_parse(self.content, self.content_offset, nested_content)
             nested_content = nested_content.children
         # add common content between
-        for item in nested_content:
-            if not isinstance(item, nodes.definition_list):
-                items.append(item)
+        items += [
+            item for item in nested_content if not isinstance(item, nodes.definition_list)
+        ]
 
         markdown_help = False
         if 'markdownhelp' in self.options:
@@ -524,18 +627,35 @@ class ArgParseDirective(Directive):
                 items.extend(render_list([result['description']], True))
             else:
                 items.append(self._nested_parse_paragraph(result['description']))
+
+        if 'index-groups' in self.options:
+            self.index_groups = list(map(str.strip, self.options['index-groups'].split(', ')))
+        else:
+            self.index_groups = []
+
+        full_command = command_pos_args(result)
+        node_id = make_id(self.env, self.state.document, '', full_command)
+        target = nodes.target('', '', ids=[node_id])
+        items.append(target)
+        self.set_source_info(target)
+        self.state.document.note_explicit_target(target)
+
+        domain = cast(ArgParseDomain, self.env.get_domain(ArgParseDomain.name))
+        domain.add_argparse_command(result, node_id, self.index_groups)
+
         items.append(nodes.literal_block(text=result['usage']))
         items.extend(
-            print_action_groups(
+            self._print_action_groups(
                 result,
                 nested_content,
                 markdown_help,
                 settings=self.state.document.settings,
+                id_prefix=(f'{module_name}-' if module_name else '') + attr_name,
             )
         )
         if 'nosubcommands' not in self.options:
             items.extend(
-                print_subcommands(
+                self._print_subcommands(
                     result,
                     nested_content,
                     markdown_help,
@@ -551,6 +671,178 @@ class ArgParseDirective(Directive):
         return items
 
 
-def setup(app):
+class CommandsIndex(Index):
+    name = 'index'
+    localname = 'Commands Index'
+
+    def generate(
+        self, docnames: Iterable[str] | None = None
+    ) -> tuple[list[tuple[str, list[IndexEntry]]], bool]:
+        content: dict[str, list[IndexEntry]] = {}
+        commands: list[_ObjectDescriptionTuple]
+        commands = sorted(self.domain.get_objects(), key=operator.itemgetter(0))
+        for cmd, dispname, _typ, docname, anchor, priority in commands:
+            inx_entry = IndexEntry(cmd, priority, docname, anchor, docname, '', dispname)
+            content.setdefault(cmd[0].lower(), []).append(inx_entry)
+        return sorted(content.items()), True
+
+
+class CommandsByGroupIndex(Index):
+    name = 'by-group'
+    localname = 'Commands by Group'
+
+    def generate(
+        self, docnames: Iterable[str] | None = None
+    ) -> tuple[list[tuple[str, list[IndexEntry]]], bool]:
+        content: dict[str, list[IndexEntry]] = {}
+        commands_by_group: dict[str, list[_ObjectDescriptionTuple]]
+        commands_by_group = self.domain.data['commands-by-group']
+        for group in sorted(commands_by_group):
+            commands = sorted(commands_by_group[group], key=operator.itemgetter(0))
+            for cmd, dispname, _typ, docname, anchor, priority in commands:
+                idx_entry = IndexEntry(cmd, priority, docname, anchor, docname, '', dispname)
+                content.setdefault(group, []).append(idx_entry)
+        return sorted(content.items()), True
+
+
+class ArgParseDomain(Domain):
+    name = 'commands'
+    label = 'commands-label'
+
+    roles = {
+        'command': XRefRole(),
+    }
+    indices = []
+    initial_data: dict[
+        str, list[_ObjectDescriptionTuple] | dict[str, list[_ObjectDescriptionTuple]]
+    ] = {
+        'commands': [],
+        'commands-by-group': {},
+    }
+
+    # Keep a list of the temporary index files that are created in the
+    # source directory. The files are created if the command_xxx_in_toctree
+    # option is set to True.
+    temporary_index_files: list[Path] = []
+
+    def get_full_qualified_name(self, node: Element) -> str:
+        return str(node.arguments[0])
+
+    def get_objects(self) -> Iterable[_ObjectDescriptionTuple]:
+        yield from self.data['commands']
+
+    def resolve_xref(
+        self,
+        env: BuildEnvironment,
+        fromdocname: str,
+        builder: Builder,
+        typ: str,
+        target: str,
+        node: pending_xref,
+        contnode: Element,
+    ) -> Element | None:
+        anchor_id = target_to_anchor_id(target)
+        match = [
+            (docname, anchor)
+            for _cmd, _sig, _type, docname, anchor, _prio in self.get_objects()
+            if anchor_id == anchor
+        ]
+
+        if len(match) > 0:
+            todocname = match[0][0]
+            targ = match[0][1]
+
+            return make_refnode(builder, fromdocname, todocname, targ, contnode, targ)
+        else:
+            msg = f'Error, no command xref target from {fromdocname}:{target}'
+            logger.warning(msg)
+            return None
+
+    def add_argparse_command(self, result: dict, anchor: str, groups: Sequence[str] = ()):
+        """Add an argparse command to the domain."""
+        full_command = command_pos_args(result)
+        desc = result.get('description', 'No description.')
+        idx_entry = (full_command, desc, 'command', self.env.docname, anchor, 0)
+        self.data['commands'].append(idx_entry)
+
+        # A likely duplicate list of index entries is kept for the grouping.
+        # A separate list is kept to avoid the edge case that a command is used
+        # once as part of a group (with index_groups) and another time without the
+        # option.
+        commands_by_group = self.data['commands-by-group']
+        for group in groups:
+            commands_by_group.setdefault(group, []).append(idx_entry)
+
+
+def _delete_temporary_files(app: Sphinx, _err) -> None:
+    assert app.env is not None
+    domain = cast(ArgParseDomain, app.env.domains[ArgParseDomain.name])
+    for fpath in domain.temporary_index_files:
+        fpath.unlink(missing_ok=True)
+
+
+def _create_temporary_dummy_file(
+    app: Sphinx, domain: Domain, docname: str, title: str
+) -> None:
+    dummy_file = app.srcdir / docname
+    if dummy_file.exists():
+        msg = (
+            f'The Sphinx project cannot include a file named '
+            f'"{docname}" in the source directory.'
+        )
+        raise ExtensionError(msg)
+
+    underline = len(title) * '='
+    content = '\n'.join((
+        f'{title}',
+        f'{underline}',
+        '',
+        'Temporary file that is replaced with an index from the sphinxarg extension.',
+        f'Creating this temporary file enables you to add {docname} to the toctree.',
+    ))
+    dummy_file.write_text(content, encoding='utf-8')
+    domain = cast(ArgParseDomain, domain)
+    domain.temporary_index_files.append(dummy_file)
+
+
+def configure_ext(app: Sphinx) -> None:
+    conf = app.config.sphinx_argparse_conf
+    domain = cast(ArgParseDomain, app.env.domains[ArgParseDomain.name])
+    build_index = False
+    build_by_group_index = False
+    if 'commands_by_group_index_file_suffix' in conf:
+        build_by_group_index = True
+        CommandsByGroupIndex.name = conf.get('commands_by_group_index_file_suffix')
+    if 'commands_by_group_index_title' in conf:
+        build_by_group_index = True
+        CommandsByGroupIndex.localname = conf.get('commands_by_group_index_title')
+    if ('commands_index_in_toctree', True) in conf.items():
+        build_index = True
+        docname = f'{ArgParseDomain.name}-{CommandsIndex.name}.rst'
+        _create_temporary_dummy_file(app, domain, docname, CommandsIndex.localname)
+    if ('commands_by_group_index_in_toctree', True) in conf.items():
+        build_by_group_index = True
+        docname = f'{ArgParseDomain.name}-{CommandsByGroupIndex.name}.rst'
+        _create_temporary_dummy_file(app, domain, docname, CommandsByGroupIndex.localname)
+
+    if build_index or ('build_commands_index', True) in conf.items():
+        domain.indices.append(CommandsIndex)
+    if build_by_group_index or ('build_commands_by_group_index', True) in conf.items():
+        domain.indices.append(CommandsByGroupIndex)
+
+    # Call setup so that :ref:`commands-...` are link targets.
+    domain.setup()
+
+
+def setup(app: Sphinx):
+    app.setup_extension('sphinx.ext.autodoc')
+    app.add_domain(ArgParseDomain)
     app.add_directive('argparse', ArgParseDirective)
-    return {'parallel_read_safe': True, 'version': __version__}
+    app.add_config_value('sphinx_argparse_conf', {}, 'html', types={dict})
+    app.connect('builder-inited', configure_ext)
+    app.connect('build-finished', _delete_temporary_files)
+    return {
+        'version': __version__,
+        'parallel_read_safe': True,
+        'parallel_write_safe': True,
+    }

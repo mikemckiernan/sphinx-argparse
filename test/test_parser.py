@@ -22,7 +22,9 @@ def test_parse_default():
 
     data = parse_parser(parser)
 
-    assert data['action_groups'][0]['options'] == [{'name': ['--foo'], 'default': '"123"', 'help': ''}]
+    assert data['action_groups'][0]['options'] == [
+        {'name': ['--foo'], 'default': "'123'", 'help': ''}
+    ]
 
 
 def test_parse_arg_choices():
@@ -63,7 +65,9 @@ def test_parse_default_skip_default():
 
     data = parse_parser(parser, skip_default_values=True)
 
-    assert data['action_groups'][0]['options'] == [{'name': ['--foo'], 'default': '==SUPPRESS==', 'help': ''}]
+    assert data['action_groups'][0]['options'] == [
+        {'name': ['--foo'], 'default': '==SUPPRESS==', 'help': ''}
+    ]
 
 
 def test_parse_positional():
@@ -129,9 +133,15 @@ def test_parse_nested():
                 {
                     'description': None,
                     'title': 'Named Arguments',
-                    'options': [{'name': ['--upgrade'], 'default': False, 'help': 'foo2 help'}],
+                    'options': [
+                        {'name': ['--upgrade'], 'default': False, 'help': 'foo2 help'}
+                    ],
                 },
             ],
+            'parent': {
+                'name': '',
+                'prog': 'under-test',
+            },
         }
     ]
 
@@ -179,6 +189,10 @@ def test_parse_nested_with_alias():
                     ],
                 },
             ],
+            'parent': {
+                'name': '',
+                'prog': 'under-test',
+            },
         }
     ]
 
@@ -199,6 +213,10 @@ def test_aliased_traversal():
         'usage': 'usage: under-test level1 [-h]',
         'name': 'level1 (l1)',
         'identifier': 'level1',
+        'parent': {
+            'name': '',
+            'prog': 'under-test',
+        },
     }
 
 
@@ -226,6 +244,19 @@ def test_parse_nested_traversal():
         {'name': ['bar'], 'help': '', 'default': None},
     ]
 
+    assert data3['parent'] == {
+        'name': 'level2',
+        'prog': '',
+        'parent': {
+            'name': 'level1',
+            'prog': '',
+            'parent': {
+                'name': '',
+                'prog': 'under-test',
+            },
+        },
+    }
+
     data2 = parser_navigate(data, 'level1 level2')
     assert data2['children'] == [
         {
@@ -243,10 +274,20 @@ def test_parse_nested_traversal():
                     ],
                 }
             ],
+            'parent': {
+                'name': 'level2',
+                'prog': '',
+                'parent': {
+                    'name': 'level1',
+                    'prog': '',
+                    'parent': {'name': '', 'prog': 'under-test'},
+                },
+            },
         }
     ]
 
     assert data == parser_navigate(data, '')
+    assert 'parent' not in data
 
 
 def test_fill_in_default_prog():
@@ -259,17 +300,19 @@ def test_fill_in_default_prog():
 
     assert data['action_groups'][0]['options'] == [
         {
-            'default': '"foo"',
+            'default': "'foo'",
             'name': ['bar'],
-            'help': 'test_fill_in_default_prog (default: "foo")',
+            'help': "test_fill_in_default_prog (default: 'foo')",
         }
     ]
 
 
 def test_string_quoting():
     """
-    If an optional argument has a string type and a default, then the default should be in quotes.
-    This prevents things like '--optLSFConf=-q short' when '--optLSFConf="-q short"' is correct.
+    If an optional argument has a string type and a default,
+    then the default should be in quotes.
+    This prevents things like '--optLSFConf=-q short'
+    when '--optLSFConf="-q short"' is correct.
     """
     parser = argparse.ArgumentParser(prog='test_string_quoting_prog')
     parser.add_argument('--bar', default='foo bar', help='%(prog)s (default: %(default)s)')
@@ -277,9 +320,9 @@ def test_string_quoting():
 
     assert data['action_groups'][0]['options'] == [
         {
-            'default': '"foo bar"',
+            'default': "'foo bar'",
             'name': ['--bar'],
-            'help': 'test_string_quoting_prog (default: "foo bar")',
+            'help': "test_string_quoting_prog (default: 'foo bar')",
         }
     ]
 
@@ -289,8 +332,8 @@ def test_parse_groups():
     parser.add_argument('--foo', action='store_true', default=False, help='foo help')
     parser.add_argument('--bar', action='store_true', default=False)
     optional = parser.add_argument_group('Group 1')
-    optional.add_argument("--option1", help='option #1')
-    optional.add_argument("--option2", help='option #2')
+    optional.add_argument('--option1', help='option #1')
+    optional.add_argument('--option2', help='option #2')
 
     data = parse_parser(parser)
     assert data['action_groups'] == [
@@ -379,6 +422,10 @@ def test_action_groups_with_subcommands():
             'bare_usage': 'foo A [-h] baz',
             'name': 'A',
             'help': 'A subparser',
+            'parent': {
+                'name': '',
+                'prog': 'foo',
+            },
         },
         {
             'usage': 'usage: foo B [-h] [--barg {X,Y,Z}]',
@@ -399,5 +446,9 @@ def test_action_groups_with_subcommands():
             'bare_usage': 'foo B [-h] [--barg {X,Y,Z}]',
             'name': 'B',
             'help': 'B subparser',
+            'parent': {
+                'name': '',
+                'prog': 'foo',
+            },
         },
     ]
